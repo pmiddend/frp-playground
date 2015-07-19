@@ -20,14 +20,15 @@ source-repository head
   type: git
   location: git://github.com/pmiddend/frp-playground.git
 
-executable frp-playground
+executable frp-arkanoid
   hs-source-dirs:      src
-  main-is:             Frp/Main.hs
+  main-is:             Frp/BreakoutMain.hs
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base >=4.7
                      , classy-prelude
                      , reactive-banana
+                     , composition
                      , linear
                      , classy-prelude
                      , lens

@@ -45,8 +45,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
   reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> currentPictureEvent
   let quitEvent = RBC.filterE (has (_Keyboard . keySym . only KS.Escape)) eevent
   reactimate $ (\_ -> quitFire ()) <$> quitEvent
-  return ()
---  reactimate $ (\v -> putStrLn $ "Ah, an event: " <> pack (show v) ) <$> cumulatedPosition
+  --  reactimate $ (\v -> putStrLn $ "Ah, an event: " <> pack (show v) ) <$> cumulatedPosition
 
 main :: IO ()
 main = do
