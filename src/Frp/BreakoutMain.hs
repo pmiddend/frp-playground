@@ -70,7 +70,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
   eevent <- fromAddHandler eventAddHandler
   let
     mouseXMovement :: RBC.Event t Point
-    mouseXMovement = RBC.filterJust ((mapped . _y .~ 0) . (^? _MouseMotion . mouseMotionDelta) <$> eevent)
+    mouseXMovement = RBC.filterJust ((mapped . _y .~ 0) . (^? _MouseAxis . mouseAxisDelta) <$> eevent)
     ballCollision :: RBC.Event t CollisionDirection
     ballCollision = RBC.filterJust ((detectCollision <$> paddlePosition <*> ballPosition) RBC.<@ etick)
     detectCollision :: Point -> Point -> Maybe CollisionDirection
