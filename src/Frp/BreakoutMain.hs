@@ -9,14 +9,15 @@ import           Control.Lens                (below, has, makeLenses, mapped,
                                               _Just)
 import           Control.Monad.Loops         (whileM_)
 import           Data.Composition            ((.:))
+import           Frp.Ord
 import           Linear.V2
 import           Linear.Vector               ((*^), (^*))
-import qualified Reactive.Banana.Combinators as RBC
+import           Reactive.Banana.Combinators
 import           Reactive.Banana.Frameworks
 import           Reactive.Banana.Switch
 import           Wrench.Color
 import           Wrench.Engine
-import           Wrench.Event
+import qualified Wrench.Event                as WE
 import           Wrench.FloatType
 import           Wrench.ImageData
 import           Wrench.KeyMovement
@@ -29,12 +30,12 @@ import           Wrench.Point
 import           Wrench.Time
 import           Wrench.WindowSize
 
-eventToPosChange :: RBC.Event t Event -> RBC.Event t Point
-eventToPosChange event = RBC.filterJust ((\e -> (e ^? _Keyboard) >>= eventToPosChange') <$> event)
-  where eventToPosChange' (KeyboardEvent{_keyMovement=KeyDown,_keySym=KS.Left}) = Just (V2 (-10) 0)
-        eventToPosChange' (KeyboardEvent{_keyMovement=KeyDown,_keySym=KS.Right}) = Just (V2 10 0)
-        eventToPosChange' (KeyboardEvent{_keyMovement=KeyDown,_keySym=KS.Up}) = Just (V2 0 (-10))
-        eventToPosChange' (KeyboardEvent{_keyMovement=KeyDown,_keySym=KS.Down}) = Just (V2 0 10)
+eventToPosChange :: Event t WE.Event -> Event t Point
+eventToPosChange event = filterJust ((\e -> (e ^? WE._Keyboard) >>= eventToPosChange') <$> event)
+  where eventToPosChange' (WE.KeyboardEvent{WE._keyMovement=KeyDown,WE._keySym=KS.Left}) = Just (V2 (-10) 0)
+        eventToPosChange' (WE.KeyboardEvent{WE._keyMovement=KeyDown,WE._keySym=KS.Right}) = Just (V2 10 0)
+        eventToPosChange' (WE.KeyboardEvent{WE._keyMovement=KeyDown,WE._keySym=KS.Up}) = Just (V2 0 (-10))
+        eventToPosChange' (WE.KeyboardEvent{WE._keyMovement=KeyDown,WE._keySym=KS.Down}) = Just (V2 0 10)
         eventToPosChange' _ = Nothing
 
 data TickData = TickData { _currentTicks :: TimeTicks, _currentDelta :: TimeDelta }
@@ -53,9 +54,6 @@ rightBorder = 640-20
 topBorder = 32
 topBlockBorder=92
 
-clamp :: Ord a => a -> a -> a -> a
-clamp minV maxV v = min maxV (max minV v)
-
 initialBlocks :: [Point]
 initialBlocks = [V2 (leftBorder + x * blockSize ^. _x) (topBorder + y * blockSize ^. _y) | x <- [0..14], y <- [0..5]]
 
@@ -64,15 +62,15 @@ data CollisionDirection = CollisionOnLeft
                         | CollisionOnRoof
                         | CoolisionOnFloor
 
-setupNetwork :: forall t p. Frameworks t => Platform p => p -> SurfaceMap (PlatformImage p) -> AddHandler TickData -> AddHandler Event -> Handler () -> Moment t ()
+setupNetwork :: forall t p. Frameworks t => Platform p => p -> SurfaceMap (PlatformImage p) -> AddHandler TickData -> AddHandler WE.Event -> Handler () -> Moment t ()
 setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
   etick <- fromAddHandler tickAddHandler
   eevent <- fromAddHandler eventAddHandler
   let
-    mouseXMovement :: RBC.Event t Point
-    mouseXMovement = RBC.filterJust ((mapped . _y .~ 0) . (^? _MouseAxis . mouseAxisDelta) <$> eevent)
-    ballCollision :: RBC.Event t CollisionDirection
-    ballCollision = RBC.filterJust ((detectCollision <$> paddlePosition <*> ballPosition) RBC.<@ etick)
+    mouseXMovement :: Event t Point
+    mouseXMovement = filterJust ((mapped . _y .~ 0) . (^? WE._MouseAxis . WE.mouseAxisDelta) <$> eevent)
+    ballCollision :: Event t CollisionDirection
+    ballCollision = filterJust ((detectCollision <$> paddlePosition <*> ballPosition) <@ etick)
     detectCollision :: Point -> Point -> Maybe CollisionDirection
     detectCollision paddlePos ballPos | ballPos ^. _x < leftBorder = Just CollisionOnLeft
                                       | ballPos ^. _x + ballSize > rightBorder = Just CollisionOnRight
@@ -80,23 +78,23 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
                                       | otherwise = Nothing
     deltaVel :: Point -> TickData -> Point
     deltaVel v td = (realToFrac (toSeconds (td ^. currentDelta))) *^ v
-    ballPosition :: RBC.Behavior t Point
-    ballPosition = RBC.accumB initialBallPosition ((+) <$> (deltaVel RBC.<$> ballVelocity RBC.<@> etick))
+    ballPosition :: Behavior t Point
+    ballPosition = accumB initialBallPosition ((+) <$> (deltaVel <$> ballVelocity <@> etick))
     transformVelocity :: CollisionDirection -> Point -> Point
     transformVelocity CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
     transformVelocity CollisionOnRight v | v ^. _x > 0 = v & _x %~ negate
     transformVelocity _ v = v
-    ballVelocity :: RBC.Behavior t Point
-    ballVelocity = RBC.accumB initialBallVelocity (transformVelocity <$> ballCollision)
+    ballVelocity :: Behavior t Point
+    ballVelocity = accumB initialBallVelocity (transformVelocity <$> ballCollision)
     createPicture :: Point -> Point -> Picture
     createPicture paddle ball = pictures [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"]
-    paddlePosition :: RBC.Behavior t Point
-    paddlePosition = RBC.accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
---    currentPictureEvent = ((`pictureTranslated` (pictureSpriteTopLeft "paddle")) <$> paddlePosition) RBC.<@ etick
-    currentPictureEvent = (createPicture <$> paddlePosition <*> ballPosition) RBC.<@ etick
+    paddlePosition :: Behavior t Point
+    paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
+--    currentPictureEvent = ((`pictureTranslated` (pictureSpriteTopLeft "paddle")) <$> paddlePosition) <@ etick
+    currentPictureEvent = (createPicture <$> paddlePosition <*> ballPosition) <@ etick
   --let carPosX = accumB 100 (1 <$ keyDownSyms eevent)
   reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> currentPictureEvent
-  let quitEvent = RBC.filterE (has (_Keyboard . keySym . only KS.Escape)) eevent
+  let quitEvent = filterE (has (WE._Keyboard . WE.keySym . only KS.Escape)) eevent
   reactimate $ (\_ -> quitFire ()) <$> quitEvent
   reactimate $ (\v -> putStrLn $ "Ah, an event: " <> pack (show v) ) <$> mouseXMovement
 
