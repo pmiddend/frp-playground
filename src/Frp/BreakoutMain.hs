@@ -48,6 +48,7 @@ leftBorder = 20
 rightBorder = 640-20
 topBorder = 32
 topBlockBorder=92
+bottomBorder = 480
 
 initialBlocks :: [Point]
 initialBlocks = [V2 (leftBorder + x * blockSize ^. _x) (topBorder + y * blockSize ^. _y) | x <- [0..14], y <- [0..5]]
@@ -63,17 +64,41 @@ ballRect p = rectFromOriginAndDim p (V2 ballSize ballSize)
 paddleRect :: Point -> Rectangle
 paddleRect p = rectFromOriginAndDim p paddleSize
 
-detectCollision :: Point -> Point -> Maybe CollisionDirection
-detectCollision paddlePos ballPos
-  | paddleInRange && ballPos ^. _y + ballSize / 2 < paddlePos ^. _y + paddleSize ^. _y . dividing 2 = Just CollisionOnFloor
-  | ballPos ^. _x < leftBorder = Just CollisionOnLeft
-  | ballPos ^. _x + ballSize > rightBorder = Just CollisionOnRight
-  | ballPos ^. _y < topBorder = Just CollisionOnRoof
+detectCollisionRect :: Rectangle -> Rectangle -> Maybe CollisionDirection
+detectCollisionRect rect ball
+  | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just CollisionOnFloor
+  | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just CollisionOnRoof
+  | paddleInRange && (ballHMiddle < paddleHMiddle) = Just CollisionOnLeft
+  | paddleInRange && (ballHMiddle > paddleHMiddle) = Just CollisionOnRight
   | otherwise = Nothing
-  where paddleInRange = ((ballPos + (V2 ballSize ballSize)) `pointG` paddlePos) && (ballPos `pointL` (paddlePos + paddleSize))
+  where paddleInRange = ((ball ^. rectRightBottom) `pointG` (rect ^. rectLeftTop)) && ((ball ^. rectLeftTop) `pointL` (rect ^. rectRightBottom))
+        ballVMiddle = ball ^. rectTop + ball ^. rectHeight / 2
+        ballHMiddle = ball ^. rectLeft + ball ^. rectWidth / 2
+        paddleHMiddle = rect ^. rectLeft + rect ^. rectWidth / 2
+
+detectCollisionBorder :: Rectangle -> Maybe CollisionDirection
+detectCollisionBorder ball
+  | ball ^. rectLeft < leftBorder = Just CollisionOnLeft
+  | ball ^. rectRight > rightBorder = Just CollisionOnRight
+  | ball ^. rectTop < topBorder = Just CollisionOnRoof
+  | ball ^. rectBottom > bottomBorder = Just CollisionOnFloor
+  | otherwise = Nothing
+
+detectCollision :: Point -> Point -> Maybe CollisionDirection
+detectCollision paddlePos ballPos =
+  detectCollisionBorder ballRect <|>
+  detectCollisionRect (rectFromOriginAndDim paddlePos paddleSize) ballRect
+    where ballRect = rectFromOriginAndDim ballPos (V2 ballSize ballSize)
 
 createPicture :: Point -> Point -> Picture
 createPicture paddle ball = pictures [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"]
+
+transformVelocity :: CollisionDirection -> Point -> Point
+transformVelocity CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
+transformVelocity CollisionOnRight v | v ^. _x > 0 = v & _x %~ negate
+transformVelocity CollisionOnRoof v | v ^. _y < 0 = v & _y %~ negate
+transformVelocity CollisionOnFloor v | v ^. _y > 0 = v & _y %~ negate
+transformVelocity _ v = v
 
 setupNetwork :: forall t p. Frameworks t => Platform p => p -> SurfaceMap (PlatformImage p) -> AddHandler TickData -> AddHandler WE.Event -> Handler () -> Moment t ()
 setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
@@ -88,12 +113,6 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     deltaVel v td = (realToFrac (toSeconds (td ^. currentDelta))) *^ v
     ballPosition :: Behavior t Point
     ballPosition = accumB initialBallPosition ((+) <$> (deltaVel <$> ballVelocity <@> etick))
-    transformVelocity :: CollisionDirection -> Point -> Point
-    transformVelocity CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
-    transformVelocity CollisionOnRight v | v ^. _x > 0 = v & _x %~ negate
-    transformVelocity CollisionOnRoof v | v ^. _y < 0 = v & _y %~ negate
-    transformVelocity CollisionOnFloor v | v ^. _y > 0 = v & _y %~ negate
-    transformVelocity _ v = v
     ballVelocity :: Behavior t Point
     ballVelocity = accumB initialBallVelocity (transformVelocity <$> ballCollision)
     paddlePosition :: Behavior t Point
@@ -102,7 +121,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
   reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> currentPictureEvent
   let quitEvent = filterE (has (WE._Keyboard . WE.keySym . only KS.Escape)) eevent
   reactimate $ (\_ -> quitFire ()) <$> quitEvent
-  reactimate $ (\v -> putStrLn $ "Ah, an event: " <> pack (show v) ) <$> mouseXMovement
+--  reactimate $ (\v -> putStrLn $ "Ah, an event: " <> pack (show v) ) <$> mouseXMovement
 
 main :: IO ()
 main = do
