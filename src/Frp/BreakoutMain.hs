@@ -3,24 +3,26 @@
 {-# LANGUAGE TemplateHaskell     #-}
 module Main where
 
-import           ClassyPrelude               hiding (union)
-import           Control.Lens                (has, makeLenses, mapped, only,
-                                              (%~), (&), (.~), (^.), (^?),
-                                              _head)
-import           Control.Monad.Loops         (whileM_)
-import           Data.Foldable               (asum)
+import           ClassyPrelude                  hiding (union)
+import           Control.Lens                   (has, makeLenses, mapped, only,
+                                                 (%~), (&), (.~), (^.), (^?),
+                                                 _head)
+import           Control.Monad.Loops            (whileM_)
+import           Data.Foldable                  (asum)
 import           Frp.Ord
 import           Linear.V2
-import           Linear.Vector               ((*^), (^*))
+import           Linear.Vector                  ((*^), (^*))
 import           Reactive.Banana.Combinators
 import           Reactive.Banana.Frameworks
 import           Reactive.Banana.Switch
+import           Wrench.BitmapFont.Render
+import           Wrench.BitmapFont.RenderResult
 import           Wrench.Color
 import           Wrench.CommonGeometry
 import           Wrench.Engine
-import qualified Wrench.Event                as WE
+import qualified Wrench.Event                   as WE
 import           Wrench.ImageData
-import qualified Wrench.Keysym               as KS
+import qualified Wrench.Keysym                  as KS
 import           Wrench.MediaData
 import           Wrench.MouseGrabMode
 import           Wrench.Picture
@@ -99,8 +101,8 @@ detectCollision paddlePos ballPos =
   detectCollisionRect (rectFromOriginAndDim paddlePos paddleSize) br
     where br = ballRect ballPos
 
-createPicture :: Point -> Point -> [Point] -> Picture
-createPicture paddle ball blocks = pictures $ [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks)
+createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture
+createPicture images paddle ball blocks score = pictures $ [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
 
 transformVelocity :: CollisionDirection -> Point -> Point
 transformVelocity CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
@@ -111,6 +113,9 @@ transformVelocity _ v = v
 
 deleteNth :: Int -> [a] -> [a]
 deleteNth n = uncurry (++) . second unsafeTail . splitAt n
+
+renderScore :: SurfaceMap a -> Int -> Picture
+renderScore images score = (textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture
 
 setupNetwork :: forall t p. Frameworks t => Platform p => p -> SurfaceMap (PlatformImage p) -> AddHandler TickData -> AddHandler WE.Event -> Handler () -> Moment t ()
 setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
@@ -133,7 +138,9 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     ballVelocity = accumB initialBallVelocity (transformVelocity <$> (ballPaddleCollision `union` (snd <$> ballBlockCollision)))
     paddlePosition :: Behavior t Point
     paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
-    currentPictureEvent = (createPicture <$> paddlePosition <*> ballPosition <*> blocks) <@ etick
+    score :: Behavior t Int
+    score = accumB 0 ((+) <$> (1 <$ ballBlockCollision))
+    currentPictureEvent = (createPicture <$> pure surfaces <*> paddlePosition <*> ballPosition <*> blocks <*> score) <@ etick
   reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> currentPictureEvent
   let quitEvent = filterE (has (WE._Keyboard . WE.keySym . only KS.Escape)) eevent
   reactimate $ (\_ -> quitFire ()) <$> quitEvent
