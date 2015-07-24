@@ -6,7 +6,7 @@ module Main where
 import           ClassyPrelude                  hiding (union)
 import           Control.Lens                   (has, makeLenses, mapped, only,
                                                  (%~), (&), (.~), (^.), (^?),
-                                                 _head)
+                                                 _head,view,_2)
 import           Control.Monad.Loops            (whileM_)
 import           Data.Foldable                  (asum)
 import           Frp.Ord
@@ -58,29 +58,36 @@ data CollisionDirection = CollisionOnLeft
                         | CollisionOnFloor
                           deriving(Show)
 
+data CollisionData = CollisionData {
+    _cdDirection :: CollisionDirection
+  , _cdPoint :: Point
+  }
+
+$(makeLenses ''CollisionData)
+
 ballRect :: Point -> Rectangle
 ballRect p = rectFromOriginAndDim p (V2 ballSize ballSize)
 
 paddleRect :: Point -> Rectangle
 paddleRect p = rectFromOriginAndDim p paddleSize
 
-ballBlocksCollision :: [Point] -> Point -> Maybe (Int,CollisionDirection)
+ballBlocksCollision :: [Point] -> Point -> Maybe (Int,CollisionData)
 ballBlocksCollision blocks ballPos =
   let blockRects :: [Rectangle]
       blockRects = (`rectFromOriginAndDim` blockSize) <$> blocks
-      collisions :: [Maybe CollisionDirection]
+      collisions :: [Maybe CollisionData]
       collisions = (`detectCollisionRect` ballRect ballPos) <$> blockRects
-      collisionWithIndex :: [Maybe (Int,CollisionDirection)]
+      collisionWithIndex :: [Maybe (Int,CollisionData)]
       collisionWithIndex = sequence <$> (zip [0..] collisions)
       firstCollision = asum collisionWithIndex
   in firstCollision
 
-detectCollisionRect :: Rectangle -> Rectangle -> Maybe CollisionDirection
+detectCollisionRect :: Rectangle -> Rectangle -> Maybe CollisionData
 detectCollisionRect rect ball
-  | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just CollisionOnFloor
-  | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just CollisionOnRoof
-  | paddleInRange && (ballHMiddle < paddleHMiddle) = Just CollisionOnLeft
-  | paddleInRange && (ballHMiddle > paddleHMiddle) = Just CollisionOnRight
+  | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just (CollisionData CollisionOnFloor (V2 ballHMiddle (rect ^. rectTop)))
+  | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just (CollisionData CollisionOnRoof (V2 ballHMiddle (rect ^. rectBottom)))
+  | paddleInRange && (ballHMiddle < paddleHMiddle) = Just (CollisionData CollisionOnLeft (V2 (rect ^. rectLeft) ballVMiddle))
+  | paddleInRange && (ballHMiddle > paddleHMiddle) = Just (CollisionData CollisionOnRight (V2 (rect ^. rectRight) ballVMiddle))
   | otherwise = Nothing
   where paddleInRange = ((ball ^. rectRightBottom) `pointG` (rect ^. rectLeftTop)) && ((ball ^. rectLeftTop) `pointL` (rect ^. rectRightBottom))
         ballVMiddle = ball ^. rectTop + ball ^. rectHeight / 2
@@ -95,21 +102,31 @@ detectCollisionBorder ball
   | ball ^. rectBottom > bottomBorder = Just CollisionOnFloor
   | otherwise = Nothing
 
+{-
 detectCollision :: Point -> Point -> Maybe CollisionDirection
 detectCollision paddlePos ballPos =
   detectCollisionBorder br <|>
   detectCollisionRect (rectFromOriginAndDim paddlePos paddleSize) br
     where br = ballRect ballPos
+-}
 
 createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture
 createPicture images paddle ball blocks score = pictures $ [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
 
-transformVelocity :: CollisionDirection -> Point -> Point
-transformVelocity CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
-transformVelocity CollisionOnRight v | v ^. _x > 0 = v & _x %~ negate
-transformVelocity CollisionOnRoof v | v ^. _y < 0 = v & _y %~ negate
-transformVelocity CollisionOnFloor v | v ^. _y > 0 = v & _y %~ negate
+transformVelocity :: (Maybe CollisionDirection,Maybe CollisionData) -> Point -> Point
+transformVelocity (Just dir,_) v = transformVelocityBorder dir v
+transformVelocity (_,Just d) v = transformVelocityPaddle d v
 transformVelocity _ v = v
+
+transformVelocityPaddle :: CollisionData -> Point -> Point
+transformVelocityPaddle cd = transformVelocityBorder (cd ^. cdDirection)
+
+transformVelocityBorder :: CollisionDirection -> Point -> Point
+transformVelocityBorder CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
+transformVelocityBorder CollisionOnRight v | v ^. _x > 0 = v & _x %~ negate
+transformVelocityBorder CollisionOnRoof v | v ^. _y < 0 = v & _y %~ negate
+transformVelocityBorder CollisionOnFloor v | v ^. _y > 0 = v & _y %~ negate
+transformVelocityBorder _ v = v
 
 deleteNth :: Int -> [a] -> [a]
 deleteNth n = uncurry (++) . second unsafeTail . splitAt n
@@ -124,18 +141,22 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
   let
     mouseXMovement :: Event t Point
     mouseXMovement = filterJust ((mapped . _y .~ 0) . (^? WE._MouseAxis . WE.mouseAxisDelta) <$> eevent)
-    ballPaddleCollision :: Event t CollisionDirection
-    ballPaddleCollision = filterJust ((detectCollision <$> paddlePosition <*> ballPosition) <@ etick)
+    ballBorderCollision :: Event t CollisionDirection
+    ballBorderCollision = filterJust ((detectCollisionBorder <$> (ballRect <$> ballPosition)) <@ etick)
+    ballPaddleCollision :: Event t CollisionData
+    ballPaddleCollision = filterJust ((detectCollisionRect <$> (paddleRect <$> paddlePosition) <*> (ballRect <$> ballPosition)) <@ etick)
     blocks :: Behavior t [Point]
     blocks = accumB initialBlocks ((\(collisionIdx,_) -> deleteNth collisionIdx) <$> ballBlockCollision)
-    ballBlockCollision :: Event t (Int,CollisionDirection)
+    ballBlockCollision :: Event t (Int,CollisionData)
     ballBlockCollision = filterJust ((ballBlocksCollision <$> blocks <*> ballPosition) <@ etick)
     deltaVel :: Point -> TickData -> Point
     deltaVel v td = (realToFrac (toSeconds (td ^. currentDelta))) *^ v
     ballPosition :: Behavior t Point
     ballPosition = accumB initialBallPosition ((+) <$> (deltaVel <$> ballVelocity <@> etick))
+    ballBorderAndBlockCollision :: Event t CollisionDirection
+    ballBorderAndBlockCollision = ballBorderCollision `union` (view (_2 . cdDirection) <$> ballBlockCollision)
     ballVelocity :: Behavior t Point
-    ballVelocity = accumB initialBallVelocity (transformVelocity <$> (ballPaddleCollision `union` (snd <$> ballBlockCollision)))
+    ballVelocity = accumB initialBallVelocity (transformVelocity <$> ((\collDir -> (Just collDir,Nothing)) <$> ballBorderAndBlockCollision) `union` ((\collData -> (Nothing,Just collData)) <$> ballPaddleCollision))
     paddlePosition :: Behavior t Point
     paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
     score :: Behavior t Int
