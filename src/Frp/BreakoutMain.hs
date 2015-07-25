@@ -12,7 +12,7 @@ import           Control.Monad.Loops            (whileM_)
 import           Data.Foldable                  (asum)
 import           Frp.Ord
 import           Linear.V2
-import           Linear.Vector                  ((*^), (^*))
+import           Linear.Vector                  ((*^))
 import           Reactive.Banana.Combinators
 import           Reactive.Banana.Frameworks
 import           Reactive.Banana.Switch
@@ -28,7 +28,6 @@ import           Wrench.MediaData
 import           Wrench.MouseGrabMode
 import           Wrench.Picture
 import           Wrench.Platform
-import           Wrench.Point
 import           Wrench.Rectangle
 import           Wrench.Time
 import           Wrench.WindowSize
@@ -37,17 +36,30 @@ data TickData = TickData { _currentTicks :: TimeTicks, _currentDelta :: TimeDelt
 
 $(makeLenses ''TickData)
 
+type UnitType = Float
+type Point = V2 UnitType
+
+blockSize :: Point
 blockSize = V2 40 20
+initialBallVelocity :: Point
 initialBallVelocity = V2 100 (-100)
+initialBallPosition :: Point
 initialBallPosition = V2 320 240
+paddleSize :: Point
 paddleSize = V2 62 18
+ballSize :: UnitType
 ballSize = 14
 initialPaddlePosition :: Point
 initialPaddlePosition = V2 320 (480-14-(paddleSize ^. _y))
+leftBorder :: UnitType
 leftBorder = 20
+rightBorder :: UnitType
 rightBorder = 640-20
+topBorder :: UnitType
 topBorder = 32
+topBlockBorder :: Integer
 topBlockBorder=92
+bottomBorder :: UnitType
 bottomBorder = 480
 
 initialBlocks :: [Point]
@@ -66,15 +78,15 @@ data CollisionData = CollisionData {
 
 $(makeLenses ''CollisionData)
 
-ballRect :: Point -> Rectangle
+ballRect :: Point -> Rectangle UnitType
 ballRect p = rectFromOriginAndDim p (V2 ballSize ballSize)
 
-paddleRect :: Point -> Rectangle
+paddleRect :: Point -> Rectangle UnitType
 paddleRect p = rectFromOriginAndDim p paddleSize
 
 ballBlocksCollision :: [Point] -> Point -> Maybe (Int,CollisionData)
 ballBlocksCollision blocks ballPos =
-  let blockRects :: [Rectangle]
+  let blockRects :: [Rectangle UnitType]
       blockRects = (`rectFromOriginAndDim` blockSize) <$> blocks
       collisions :: [Maybe CollisionData]
       collisions = (`detectCollisionRect` ballRect ballPos) <$> blockRects
@@ -83,7 +95,7 @@ ballBlocksCollision blocks ballPos =
       firstCollision = asum collisionWithIndex
   in firstCollision
 
-detectCollisionRect :: Rectangle -> Rectangle -> Maybe CollisionData
+detectCollisionRect :: Rectangle UnitType -> Rectangle UnitType -> Maybe CollisionData
 detectCollisionRect rect ball
   | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just (CollisionData CollisionOnFloor (V2 ballHMiddle (rect ^. rectTop)))
   | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just (CollisionData CollisionOnRoof (V2 ballHMiddle (rect ^. rectBottom)))
@@ -95,7 +107,7 @@ detectCollisionRect rect ball
         ballHMiddle = ball ^. rectLeft + ball ^. rectWidth / 2
         paddleHMiddle = rect ^. rectLeft + rect ^. rectWidth / 2
 
-detectCollisionBorder :: Rectangle -> Maybe CollisionDirection
+detectCollisionBorder :: Rectangle UnitType -> Maybe CollisionDirection
 detectCollisionBorder ball
   | ball ^. rectLeft < leftBorder = Just CollisionOnLeft
   | ball ^. rectRight > rightBorder = Just CollisionOnRight
@@ -111,7 +123,7 @@ detectCollision paddlePos ballPos =
     where br = ballRect ballPos
 -}
 
-createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture
+createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType
 createPicture images paddle ball blocks score = pictures $ [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
 
 transformVelocity :: (Maybe CollisionDirection,Maybe CollisionData) -> Point -> Point
@@ -132,7 +144,7 @@ transformVelocityBorder _ v = v
 deleteNth :: Int -> [a] -> [a]
 deleteNth n = uncurry (++) . second unsafeTail . splitAt n
 
-renderScore :: SurfaceMap a -> Int -> Picture
+renderScore :: SurfaceMap a -> Int -> Picture UnitType UnitType
 renderScore images score = (textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture
 
 merge :: (Monoid x,Semigroup (f (Maybe t1,Maybe t2)),Functor f) => f t1 -> f t2 -> (t1 -> x) -> (t2 -> x) -> f x
@@ -160,7 +172,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
   eevent <- fromAddHandler eventAddHandler
   let
     mouseXMovement :: Event t Point
-    mouseXMovement = filterJust ((mapped . _y .~ 0) . (^? WE._MouseAxis . WE.mouseAxisDelta) <$> eevent)
+    mouseXMovement = fmap (fmap fromIntegral) (filterJust ((mapped . _y .~ 0) . (^? WE._MouseAxis . WE.mouseAxisDelta) <$> eevent))
     ballBorderCollision :: Event t CollisionDirection
     ballBorderCollision = filterJust ((detectCollisionBorder <$> (ballRect <$> ballPosition)) <@ etick)
     ballPaddleCollision :: Event t CollisionData
@@ -183,7 +195,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     score :: Behavior t Int
     score = accumB 0 ((+) <$> (1 <$ ballBlockCollision))
     currentPictureEvent = (createPicture <$> pure surfaces <*> paddlePosition <*> ballPosition <*> blocks <*> score) <@ etick
-  reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> currentPictureEvent
+  reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> (first (floor :: UnitType -> Int) <$> currentPictureEvent)
   let quitEvent = filterE (has (WE._Keyboard . WE.keySym . only KS.Escape)) eevent
   reactimate $ (\_ -> quitFire ()) <$> quitEvent
 
@@ -195,7 +207,7 @@ main = do
     (quitAddHandler,quitFire) <- newAddHandler
     md <- liftIO (readMediaFiles (loadImage platform) "media/images")
     quitRef <- newIORef True
-    unregisterQuit <- register quitAddHandler (\_ -> writeIORef quitRef False)
+    _ <- register quitAddHandler (\_ -> writeIORef quitRef False)
     compiledNetwork <- compile (setupNetwork platform (md ^. mdSurfaces) tickAddHandler eventAddHandler quitFire)
     actuate compiledNetwork
     initialTicks <- getTicks
