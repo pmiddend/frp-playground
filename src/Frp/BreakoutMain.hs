@@ -1,13 +1,13 @@
-{-# LANGUAGE TupleSections          #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
+{-# LANGUAGE TupleSections       #-}
 module Main where
 
 import           ClassyPrelude                  hiding (union)
 import           Control.Lens                   (has, makeLenses, mapped, only,
-                                                 (%~), (&), (.~), (^.), (^?),
-                                                 view,_2)
+                                                 view, (%~), (&), (.~), (^.),
+                                                 (^?), _2)
 import           Control.Monad.Loops            (whileM_)
 import           Data.Foldable                  (asum)
 import           Frp.Ord
@@ -61,7 +61,7 @@ data CollisionDirection = CollisionOnLeft
 
 data CollisionData = CollisionData {
     _cdDirection :: CollisionDirection
-  , _cdPoint :: Point
+  , _cdPoint     :: Point
   }
 
 $(makeLenses ''CollisionData)
@@ -135,8 +135,17 @@ deleteNth n = uncurry (++) . second unsafeTail . splitAt n
 renderScore :: SurfaceMap a -> Int -> Picture
 renderScore images score = (textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture
 
+merge :: (Monoid x,Semigroup (f (Maybe t1,Maybe t2)),Functor f) => f t1 -> f t2 -> (t1 -> x) -> (t2 -> x) -> f x
+merge e1 e2 f1 f2 =
+  helper <$> ((embedLeft <$> e1) <> (embedRight <$> e2))
+  where helper (Just l,_) = f1 l
+        helper (_,Just r) = f2 r
+        helper _ = mempty
+        embedLeft = (,Nothing) . Just
+        embedRight = (Nothing,) . Just
+
 -- What is this?
-mergeSomething :: Event t3 t1 -> Event t3 t2 -> (t1 -> t -> t) -> (t2 -> t -> t) -> Event t3 (t -> t)
+mergeSomething :: Event t3 t1 -> Event t3 t2 -> (t1 -> (t -> t)) -> (t2 -> (t -> t)) -> Event t3 (t -> t)
 mergeSomething e1 e2 f1 f2 =
   helper <$> ((embedLeft <$> e1) `union` (embedRight <$> e2))
   where helper (Just l,_) x = f1 l x
@@ -168,7 +177,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     ballBorderAndBlockCollision = ballBorderCollision `union` (view (_2 . cdDirection) <$> ballBlockCollision)
     ballVelocity :: Behavior t Point
 --    ballVelocity = accumB initialBallVelocity (transformVelocity <$> ((\collDir -> (Just collDir,Nothing)) <$> ballBorderAndBlockCollision) `union` ((\collData -> (Nothing,Just collData)) <$> ballPaddleCollision))
-    ballVelocity = accumB initialBallVelocity (mergeSomething ballBorderAndBlockCollision ballPaddleCollision )
+    ballVelocity = accumB initialBallVelocity (mergeSomething ballBorderAndBlockCollision ballPaddleCollision transformVelocityBorder transformVelocityPaddle)
     paddlePosition :: Behavior t Point
     paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
     score :: Behavior t Int
