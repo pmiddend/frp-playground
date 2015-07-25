@@ -124,7 +124,7 @@ detectCollision paddlePos ballPos =
 -}
 
 createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType
-createPicture images paddle ball blocks score = pictures $ [paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
+createPicture images paddle ball blocks score = pictures $ [pictureSpriteTopLeft "background",paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
 
 transformVelocity :: (Maybe CollisionDirection,Maybe CollisionData) -> Point -> Point
 transformVelocity (Just dir,_) v = transformVelocityBorder dir v
@@ -147,14 +147,13 @@ deleteNth n = uncurry (++) . second unsafeTail . splitAt n
 renderScore :: SurfaceMap a -> Int -> Picture UnitType UnitType
 renderScore images score = (textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture
 
-merge :: (Monoid x,Semigroup (f (Maybe t1,Maybe t2)),Functor f) => f t1 -> f t2 -> (t1 -> x) -> (t2 -> x) -> f x
+merge :: (Monoid x,Semigroup (f (Either t1 t2)),Functor f) => f t1 -> f t2 -> (t1 -> x) -> (t2 -> x) -> f x
 merge e1 e2 f1 f2 =
   helper <$> ((embedLeft <$> e1) <> (embedRight <$> e2))
-  where helper (Just l,_) = f1 l
-        helper (_,Just r) = f2 r
-        helper _ = mempty
-        embedLeft = (,Nothing) . Just
-        embedRight = (Nothing,) . Just
+  where helper (Left l) = f1 l
+        helper (Right r) = f2 r
+        embedLeft = Left
+        embedRight = Right
 
 -- What is this?
 mergeSomething :: Event t3 t1 -> Event t3 t2 -> (t1 -> (t -> t)) -> (t2 -> (t -> t)) -> Event t3 (t -> t)
