@@ -10,12 +10,16 @@ import           Control.Lens                   (has, makeLenses, mapped, only,
                                                  (^?), _2)
 import           Control.Monad.Loops            (whileM_)
 import           Data.Foldable                  (asum)
+import           Frp.Banana
+import           Frp.List
 import           Frp.Ord
+import           Linear.Metric                  (normalize)
 import           Linear.V2
 import           Linear.Vector                  ((*^))
 import           Reactive.Banana.Combinators
 import           Reactive.Banana.Frameworks
 import           Reactive.Banana.Switch
+import           Wrench.Angular
 import           Wrench.BitmapFont.Render
 import           Wrench.BitmapFont.RenderResult
 import           Wrench.Color
@@ -41,8 +45,10 @@ type Point = V2 UnitType
 
 blockSize :: Point
 blockSize = V2 40 20
+initialBallVelocityNorm :: UnitType
+initialBallVelocityNorm = 300
 initialBallVelocity :: Point
-initialBallVelocity = V2 100 (-100)
+initialBallVelocity = initialBallVelocityNorm *^ (normalize (V2 1 1))
 initialBallPosition :: Point
 initialBallPosition = V2 320 240
 paddleSize :: Point
@@ -69,11 +75,12 @@ data CollisionDirection = CollisionOnLeft
                         | CollisionOnRight
                         | CollisionOnRoof
                         | CollisionOnFloor
-                          deriving(Show)
+                          deriving(Show,Eq,Bounded,Read,Enum)
 
 data CollisionData = CollisionData {
-    _cdDirection :: CollisionDirection
-  , _cdPoint     :: Point
+    _cdDirection    :: CollisionDirection
+  , _cdPointOnBall  :: Point
+  , _cdPointOnOther :: Point
   }
 
 $(makeLenses ''CollisionData)
@@ -97,15 +104,16 @@ ballBlocksCollision blocks ballPos =
 
 detectCollisionRect :: Rectangle UnitType -> Rectangle UnitType -> Maybe CollisionData
 detectCollisionRect rect ball
-  | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just (CollisionData CollisionOnFloor (V2 ballHMiddle (rect ^. rectTop)))
-  | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just (CollisionData CollisionOnRoof (V2 ballHMiddle (rect ^. rectBottom)))
-  | paddleInRange && (ballHMiddle < paddleHMiddle) = Just (CollisionData CollisionOnLeft (V2 (rect ^. rectLeft) ballVMiddle))
-  | paddleInRange && (ballHMiddle > paddleHMiddle) = Just (CollisionData CollisionOnRight (V2 (rect ^. rectRight) ballVMiddle))
+  | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just (makeCollision CollisionOnFloor (V2 ballHMiddle (rect ^. rectTop)))
+  | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just (makeCollision CollisionOnRoof (V2 ballHMiddle (rect ^. rectBottom)))
+  | paddleInRange && (ballHMiddle < paddleHMiddle) = Just (makeCollision CollisionOnLeft (V2 (rect ^. rectLeft) ballVMiddle))
+  | paddleInRange && (ballHMiddle > paddleHMiddle) = Just (makeCollision CollisionOnRight (V2 (rect ^. rectRight) ballVMiddle))
   | otherwise = Nothing
   where paddleInRange = ((ball ^. rectRightBottom) `pointG` (rect ^. rectLeftTop)) && ((ball ^. rectLeftTop) `pointL` (rect ^. rectRightBottom))
         ballVMiddle = ball ^. rectTop + ball ^. rectHeight / 2
         ballHMiddle = ball ^. rectLeft + ball ^. rectWidth / 2
         paddleHMiddle = rect ^. rectLeft + rect ^. rectWidth / 2
+        makeCollision dir p = CollisionData{_cdDirection=dir,_cdPointOnBall=p - ball ^. rectLeftTop,_cdPointOnOther=p - rect ^. rectLeftTop}
 
 detectCollisionBorder :: Rectangle UnitType -> Maybe CollisionDirection
 detectCollisionBorder ball
@@ -114,14 +122,6 @@ detectCollisionBorder ball
   | ball ^. rectTop < topBorder = Just CollisionOnRoof
   | ball ^. rectBottom > bottomBorder = Just CollisionOnFloor
   | otherwise = Nothing
-
-{-
-detectCollision :: Point -> Point -> Maybe CollisionDirection
-detectCollision paddlePos ballPos =
-  detectCollisionBorder br <|>
-  detectCollisionRect (rectFromOriginAndDim paddlePos paddleSize) br
-    where br = ballRect ballPos
--}
 
 createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType
 createPicture images paddle ball blocks score = pictures $ [pictureSpriteTopLeft "background",paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
@@ -132,7 +132,17 @@ transformVelocity (_,Just d) v = transformVelocityPaddle d v
 transformVelocity _ v = v
 
 transformVelocityPaddle :: CollisionData -> Point -> Point
-transformVelocityPaddle cd = transformVelocityBorder (cd ^. cdDirection)
+transformVelocityPaddle cd v =
+  let theta = Degrees $ (-70) * (1-alpha) + 70 * alpha
+      alpha = traceShowId ((cd ^. cdPointOnOther . _x) / (paddleSize ^. _x))
+      rotatedNormal = V2 (sinD theta) (-(cosD theta))
+  in
+    if v ^. _y > 0 && (cd ^. cdDirection) == CollisionOnFloor
+    then initialBallVelocityNorm *^ rotatedNormal
+    else
+      if v ^. _y > 0
+      then transformVelocityBorder (cd ^. cdDirection) v
+      else v
 
 transformVelocityBorder :: CollisionDirection -> Point -> Point
 transformVelocityBorder CollisionOnLeft v | v ^. _x < 0 = v & _x %~ negate
@@ -141,29 +151,8 @@ transformVelocityBorder CollisionOnRoof v | v ^. _y < 0 = v & _y %~ negate
 transformVelocityBorder CollisionOnFloor v | v ^. _y > 0 = v & _y %~ negate
 transformVelocityBorder _ v = v
 
-deleteNth :: Int -> [a] -> [a]
-deleteNth n = uncurry (++) . second unsafeTail . splitAt n
-
 renderScore :: SurfaceMap a -> Int -> Picture UnitType UnitType
 renderScore images score = (textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture
-
-merge :: (Monoid x,Semigroup (f (Either t1 t2)),Functor f) => f t1 -> f t2 -> (t1 -> x) -> (t2 -> x) -> f x
-merge e1 e2 f1 f2 =
-  helper <$> ((embedLeft <$> e1) <> (embedRight <$> e2))
-  where helper (Left l) = f1 l
-        helper (Right r) = f2 r
-        embedLeft = Left
-        embedRight = Right
-
--- What is this?
-mergeSomething :: Event t3 t1 -> Event t3 t2 -> (t1 -> (t -> t)) -> (t2 -> (t -> t)) -> Event t3 (t -> t)
-mergeSomething e1 e2 f1 f2 =
-  helper <$> ((embedLeft <$> e1) `union` (embedRight <$> e2))
-  where helper (Just l,_) x = f1 l x
-        helper (_,Just r) x = f2 r x
-        helper _ x = x
-        embedLeft = (,Nothing) . Just
-        embedRight = (Nothing,) . Just
 
 setupNetwork :: forall t p. Frameworks t => Platform p => p -> SurfaceMap (PlatformImage p) -> AddHandler TickData -> AddHandler WE.Event -> Handler () -> Moment t ()
 setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
@@ -187,8 +176,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     ballBorderAndBlockCollision :: Event t CollisionDirection
     ballBorderAndBlockCollision = ballBorderCollision `union` (view (_2 . cdDirection) <$> ballBlockCollision)
     ballVelocity :: Behavior t Point
---    ballVelocity = accumB initialBallVelocity (transformVelocity <$> ((\collDir -> (Just collDir,Nothing)) <$> ballBorderAndBlockCollision) `union` ((\collData -> (Nothing,Just collData)) <$> ballPaddleCollision))
-    ballVelocity = accumB initialBallVelocity (mergeSomething ballBorderAndBlockCollision ballPaddleCollision transformVelocityBorder transformVelocityPaddle)
+    ballVelocity = accumB initialBallVelocity (merge ballBorderAndBlockCollision ballPaddleCollision transformVelocityBorder transformVelocityPaddle)
     paddlePosition :: Behavior t Point
     paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
     score :: Behavior t Int
