@@ -120,11 +120,10 @@ detectCollisionBorder ball
   | ball ^. rectLeft < leftBorder = Just CollisionOnLeft
   | ball ^. rectRight > rightBorder = Just CollisionOnRight
   | ball ^. rectTop < topBorder = Just CollisionOnRoof
-  | ball ^. rectBottom > bottomBorder = Just CollisionOnFloor
   | otherwise = Nothing
 
-createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType
-createPicture images paddle ball blocks score = pictures $ [pictureSpriteTopLeft "background",paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score]
+createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType -> Picture UnitType UnitType
+createPicture images paddle ball blocks score gameover = pictures $ [pictureSpriteTopLeft "background",paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score] <> [gameover]
 
 transformVelocity :: (Maybe CollisionDirection,Maybe CollisionData) -> Point -> Point
 transformVelocity (Just dir,_) v = transformVelocityBorder dir v
@@ -181,7 +180,11 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
     score :: Behavior t Int
     score = accumB 0 ((+) <$> (1 <$ ballBlockCollision))
-    currentPictureEvent = (createPicture <$> pure surfaces <*> paddlePosition <*> ballPosition <*> blocks <*> score) <@ etick
+  gameoverBehaviorTrim <- trimB (pure ((V2 320 240) `pictureTranslated` pictureSpriteCentered "gameover"))
+  let
+    gameoverEvent = filterApply (pure ((>480) .  view _y)) (ballPosition <@ etick)
+    gameoverBehavior = switchB (pure pictureBlank) (gameoverBehaviorTrim <$ gameoverEvent)
+    currentPictureEvent = (createPicture <$> pure surfaces <*> paddlePosition <*> ballPosition <*> blocks <*> score <*> gameoverBehavior) <@ etick
   reactimate $ (wrenchRender platform surfaces (error "no font specified") (Just colorsBlack)) <$> (first (floor :: UnitType -> Int) <$> currentPictureEvent)
   let quitEvent = filterE (has (WE._Keyboard . WE.keySym . only KS.Escape)) eevent
   reactimate $ (\_ -> quitFire ()) <$> quitEvent
