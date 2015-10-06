@@ -125,7 +125,10 @@ detectCollisionBorder ball
 createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType -> Picture UnitType UnitType
 createPicture images paddle ball blocks score gameover =
   let getPic identifier = pictureSprite identifier (fromIntegral <$> (view rectDimensions (snd (findSurfaceUnsafe images identifier))))
-  in pictures $ [getPic "background",paddle `pictureTranslated` getPic "paddle",ball `pictureTranslated` getPic "ball"] <> ((`pictureTranslated` getPic "block") <$> blocks) <> [renderScore images score] <> [gameover]
+      getPicLeftTop identifier =
+        let picSize = fromIntegral <$> (view rectDimensions (snd (findSurfaceUnsafe images identifier)))
+        in (picSize / 2) `pictureTranslated` pictureSprite identifier picSize
+  in pictures $ [getPicLeftTop "background",paddle `pictureTranslated` getPicLeftTop "paddle",ball `pictureTranslated` getPicLeftTop "ball"] <> ((`pictureTranslated` getPicLeftTop "block") <$> blocks) <> [renderScore images score] <> [gameover]
 
 transformVelocity :: (Maybe CollisionDirection,Maybe CollisionData) -> Point -> Point
 transformVelocity (Just dir,_) v = transformVelocityBorder dir v
@@ -183,7 +186,7 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     score :: Behavior t Int
     score = accumB 0 ((+) <$> (1 <$ ballBlockCollision))
   let gameoverSurfaceSize = (fromIntegral <$>) . view rectDimensions . snd . findSurfaceUnsafe surfaces $ "gameover"
-  gameoverBehaviorTrim <- trimB (pure ((V2 320 240 + gameoverSurfaceSize) `pictureTranslated` pictureSprite "gameover" gameoverSurfaceSize ))
+  gameoverBehaviorTrim <- trimB (pure ((V2 320 240) `pictureTranslated` pictureSprite "gameover" gameoverSurfaceSize ))
   let
     gameoverEvent = filterApply (pure ((>480) .  view _y)) (ballPosition <@ etick)
     gameoverBehavior = switchB (pure pictureBlank) (gameoverBehaviorTrim <$ gameoverEvent)
