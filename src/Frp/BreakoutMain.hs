@@ -23,10 +23,10 @@ import           Wrench.Angular
 import           Wrench.BitmapFont.Render
 import           Wrench.BitmapFont.RenderResult
 import           Wrench.Color
+import           Wrench.ImageData
 import           Wrench.CommonGeometry
 import           Wrench.Engine
 import qualified Wrench.Event                   as WE
-import           Wrench.ImageData
 import qualified Wrench.Keysym                  as KS
 import           Wrench.MediaData
 import           Wrench.MouseGrabMode
@@ -123,7 +123,9 @@ detectCollisionBorder ball
   | otherwise = Nothing
 
 createPicture :: SurfaceMap a -> Point -> Point -> [Point] -> Int -> Picture UnitType UnitType -> Picture UnitType UnitType
-createPicture images paddle ball blocks score gameover = pictures $ [pictureSpriteTopLeft "background",paddle `pictureTranslated` pictureSpriteTopLeft "paddle",ball `pictureTranslated` pictureSpriteTopLeft "ball"] <> ((`pictureTranslated` pictureSpriteTopLeft "block") <$> blocks) <> [renderScore images score] <> [gameover]
+createPicture images paddle ball blocks score gameover =
+  let getPic identifier = pictureSprite identifier (fromIntegral <$> (view rectDimensions (snd (findSurfaceUnsafe images identifier))))
+  in pictures $ [getPic "background",paddle `pictureTranslated` getPic "paddle",ball `pictureTranslated` getPic "ball"] <> ((`pictureTranslated` getPic "block") <$> blocks) <> [renderScore images score] <> [gameover]
 
 transformVelocity :: (Maybe CollisionDirection,Maybe CollisionData) -> Point -> Point
 transformVelocity (Just dir,_) v = transformVelocityBorder dir v
@@ -132,7 +134,7 @@ transformVelocity _ v = v
 
 transformVelocityPaddle :: CollisionData -> Point -> Point
 transformVelocityPaddle cd v =
-  let theta = Degrees $ (-70) * (1-alpha) + 70 * alpha
+  let theta = degrees $ (-70) * (1-alpha) + 70 * alpha
       alpha = traceShowId ((cd ^. cdPointOnOther . _x) / (paddleSize ^. _x))
       rotatedNormal = V2 (sinD theta) (-(cosD theta))
   in
@@ -151,7 +153,7 @@ transformVelocityBorder CollisionOnFloor v | v ^. _y > 0 = v & _y %~ negate
 transformVelocityBorder _ v = v
 
 renderScore :: SurfaceMap a -> Int -> Picture UnitType UnitType
-renderScore images score = (textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture
+renderScore images score = first fromIntegral ((textToPicture images "djvu" 0 (pack (show score))) ^. bfrrPicture)
 
 setupNetwork :: forall t p. Frameworks t => Platform p => p -> SurfaceMap (PlatformImage p) -> AddHandler TickData -> AddHandler WE.Event -> Handler () -> Moment t ()
 setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
@@ -180,7 +182,8 @@ setupNetwork platform surfaces tickAddHandler eventAddHandler quitFire = do
     paddlePosition = accumB initialPaddlePosition ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2)) <$> mouseXMovement)
     score :: Behavior t Int
     score = accumB 0 ((+) <$> (1 <$ ballBlockCollision))
-  gameoverBehaviorTrim <- trimB (pure ((V2 320 240) `pictureTranslated` pictureSpriteCentered "gameover"))
+  let gameoverSurfaceSize = (fromIntegral <$>) . view rectDimensions . snd . findSurfaceUnsafe surfaces $ "gameover"
+  gameoverBehaviorTrim <- trimB (pure ((V2 320 240 + gameoverSurfaceSize) `pictureTranslated` pictureSprite "gameover" gameoverSurfaceSize ))
   let
     gameoverEvent = filterApply (pure ((>480) .  view _y)) (ballPosition <@ etick)
     gameoverBehavior = switchB (pure pictureBlank) (gameoverBehaviorTrim <$ gameoverEvent)
