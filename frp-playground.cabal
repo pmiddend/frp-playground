@@ -22,7 +22,8 @@ source-repository head
 
 executable frp-arkanoid
   hs-source-dirs:      src
-  main-is:             Frp/BreakoutMain.hs
+  --main-is:             Frp/BreakoutMain.hs
+  main-is:             Frp/SimpleMain.hs
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.7
