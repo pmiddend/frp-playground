@@ -7,19 +7,22 @@ import Wrench.MediaData(readMediaFiles,mdSurfaces)
 import Wrench.Platform(WindowTitle(..),pollEvents,Platform,loadImage)
 import Wrench.WindowSize(WindowSize(..))
 import Wrench.MouseGrabMode(MouseGrabMode(..))
-import ClassyPrelude
-import Control.FRPNow.Core(runNowMaster,Behavior,callback,Now,sampleNow)
-import Control.FRPNow.EvStream(EvStream,callbackStream)
-import Control.Lens(makeLenses,(^.))
 import Wrench.Time(TimeTicks,getTicks,threadDelay,fromSeconds)
 import qualified Wrench.Event as WE
-import Wrench.Picture(Picture)
+import Wrench.Rectangle(rectDimensions)
+import Wrench.ImageData(findSurfaceUnsafe)
+import Wrench.Picture(Picture,pictureSprite,pictureTranslated)
+import ClassyPrelude
+import Control.FRPNow.Core(runNowMaster,Behavior,callback,Now,sampleNow,async,planNow)
+import Control.FRPNow.Lib(sample,Sample,plan)
+import Control.FRPNow.EvStream(EvStream,callbackStream,foldrEv,foldriEv)
+import Control.Lens(makeLenses,(^.),view)
+import Linear.V2(V2(..))
 
 type PictureType = Picture Integer Double
 
 data MainLoopState p = MainLoopState {
     _statePlatform :: p
-  , _stateTicks :: TimeTicks
   , _stateTickEvent :: EvStream ()
   , _stateTickEventCallback :: () -> IO ()
   , _stateEventEvent :: EvStream WE.Event
@@ -31,41 +34,44 @@ data MainLoopState p = MainLoopState {
 
 $(makeLenses ''MainLoopState)
 
-game :: EvStream () -> EvStream WE.Event -> Behavior PictureType
-game _ _ = return mempty
+-- EvStream -> Behavior
+game :: EvStream () -> a -> PictureType -> Behavior PictureType
+game tickEvent _ ballPicture =
+  (`pictureTranslated` ballPicture) <$> foldriEv (V2 0 0) (\v _ -> v + V2 1 1 ) (V2 0 0 <$ tickEvent)
 
-mainLoop :: Platform p => MainLoopState p -> Now ()
-mainLoop state = do
-  newTicks <- liftIO $ getTicks
-  let oldTicks = state ^. stateTicks
+newMainLoop :: Platform p => MainLoopState p -> Now ()
+newMainLoop state = do
   events <- liftIO $ pollEvents (state ^. statePlatform)
-  mapM_ (\e -> liftIO $ (state ^. stateEventEventCallback) e) events
+  mapM_ (liftIO . (state ^. stateEventEventCallback)) events
   when (any WE.isQuitEvent events) (liftIO $ state ^. stateQuitEventCallback $ ())
   liftIO $ state ^. stateTickEventCallback $ ()
-  currentPicture <- sampleNow (state ^. stateGameBehavior)
+  currentPicture <- sample (state ^. stateGameBehavior)
   liftIO $ (state ^. stateRenderFunction) currentPicture
-  liftIO $ threadDelay (fromSeconds (1/60))
-  mainLoop state
+  waitFinished <- async (threadDelay (fromSeconds (1/60)))
+  _ <- plan (newMainLoop state <$ waitFinished)
+  return ()
 
 main :: IO ()
 main =
   withPlatform (WindowTitle "arkanoid, frp style") (ConstantWindowSize 640 480) MouseGrabYes $ \platform -> do
-    initialTicks <- getTicks
     md <- readMediaFiles (loadImage platform) "media/images"
+    let ballPicture = pictureSprite "ball" (fromIntegral <$> view rectDimensions (snd (findSurfaceUnsafe (md ^. mdSurfaces) "ball")))
     runNowMaster $ do
       (tickEventStream,tickEventCallback) <- callbackStream
       (eventEventStream,eventEventCallback) <- callbackStream
       (quitEvent,quitEventCallback) <- callback
       let initialState = MainLoopState{
               _statePlatform = platform
-            , _stateTicks = initialTicks
             , _stateTickEvent = tickEventStream
             , _stateTickEventCallback = tickEventCallback
             , _stateEventEvent = eventEventStream
             , _stateEventEventCallback = eventEventCallback
             , _stateQuitEventCallback = quitEventCallback
-            , _stateGameBehavior = game tickEventStream eventEventStream
+            , _stateGameBehavior = game tickEventStream eventEventStream ballPicture
             , _stateRenderFunction = wrenchRender platform (md ^. mdSurfaces) (error "no font specified") (Just colorsBlack)
             }
-      mainLoop initialState
+      -- event and tick code here
+      waitFinished <- async (threadDelay (fromSeconds (1/60)))
+      _ <- planNow ((newMainLoop initialState) <$ waitFinished)
+      --mainLoop initialState
       return quitEvent
