@@ -7,7 +7,7 @@ import Wrench.MediaData(readMediaFiles,mdSurfaces)
 import Wrench.Platform(WindowTitle(..),pollEvents,Platform,loadImage)
 import Wrench.WindowSize(WindowSize(..))
 import Wrench.MouseGrabMode(MouseGrabMode(..))
-import Wrench.Time(TimeTicks,getTicks,threadDelay,fromSeconds)
+import Wrench.Time(TimeTicks,getTicks,threadDelay,fromSeconds,tickDelta,toSeconds)
 import qualified Wrench.Event as WE
 import Wrench.Rectangle(rectDimensions)
 import Wrench.ImageData(findSurfaceUnsafe)
@@ -15,40 +15,44 @@ import Wrench.Picture(Picture,pictureSprite,pictureTranslated)
 import ClassyPrelude
 import Control.FRPNow.Core(runNowMaster,Behavior,callback,Now,sampleNow,async,planNow)
 import Control.FRPNow.Lib(sample,Sample,plan)
-import Control.FRPNow.EvStream(EvStream,callbackStream,foldrEv,foldriEv)
-import Control.Lens(makeLenses,(^.),view)
+import Control.FRPNow.EvStream(EvStream,callbackStream,foldrEv,foldriEv,toChanges,foldEs)
+import Control.Lens(makeLenses,(^.),view,(&),(.~))
 import Linear.V2(V2(..))
 
-type PictureType = Picture Integer Double
+type PictureType = Picture Int Double
 
 data MainLoopState p = MainLoopState {
     _statePlatform :: p
-  , _stateTickEvent :: EvStream ()
-  , _stateTickEventCallback :: () -> IO ()
+  , _stateTickEventCallback :: Double -> IO ()
   , _stateEventEvent :: EvStream WE.Event
   , _stateEventEventCallback :: WE.Event -> IO ()
   , _stateQuitEventCallback :: () -> IO ()
   , _stateGameBehavior :: Behavior PictureType
   , _stateRenderFunction :: PictureType -> IO ()
+  , _stateCurrentTicks :: TimeTicks
   }
 
 $(makeLenses ''MainLoopState)
 
 -- EvStream -> Behavior
-game :: EvStream () -> a -> PictureType -> Behavior PictureType
-game tickEvent _ ballPicture =
-  (`pictureTranslated` ballPicture) <$> foldriEv (V2 0 0) (\v _ -> v + V2 1 1 ) (V2 0 0 <$ tickEvent)
+game :: Behavior Double -> EvStream WE.Event -> PictureType -> Now (Behavior PictureType)
+game time _ ballPicture = do
+  let changeEvents = V2 1 1 <$ toChanges time :: EvStream (V2 Int)
+  s <- sample $ foldEs (+) (V2 0 0) changeEvents
+  return ((`pictureTranslated` ballPicture) <$> s)
 
 newMainLoop :: Platform p => MainLoopState p -> Now ()
 newMainLoop state = do
+  currentTicks <- liftIO $ getTicks
+  let d = currentTicks `tickDelta` (state ^. stateCurrentTicks)
   events <- liftIO $ pollEvents (state ^. statePlatform)
   mapM_ (liftIO . (state ^. stateEventEventCallback)) events
   when (any WE.isQuitEvent events) (liftIO $ state ^. stateQuitEventCallback $ ())
-  liftIO $ state ^. stateTickEventCallback $ ()
+  liftIO $ state ^. stateTickEventCallback $ (toSeconds d)
   currentPicture <- sample (state ^. stateGameBehavior)
   liftIO $ (state ^. stateRenderFunction) currentPicture
   waitFinished <- async (threadDelay (fromSeconds (1/60)))
-  _ <- plan (newMainLoop state <$ waitFinished)
+  _ <- plan (newMainLoop (state & stateCurrentTicks .~ currentTicks) <$ waitFinished)
   return ()
 
 main :: IO ()
@@ -60,15 +64,18 @@ main =
       (tickEventStream,tickEventCallback) <- callbackStream
       (eventEventStream,eventEventCallback) <- callbackStream
       (quitEvent,quitEventCallback) <- callback
+      clock <- sample $ foldEs (+) 0 tickEventStream
+      pictureBehavior <- game clock eventEventStream ballPicture
+      initialTicks <- liftIO $ getTicks
       let initialState = MainLoopState{
               _statePlatform = platform
-            , _stateTickEvent = tickEventStream
             , _stateTickEventCallback = tickEventCallback
             , _stateEventEvent = eventEventStream
             , _stateEventEventCallback = eventEventCallback
             , _stateQuitEventCallback = quitEventCallback
-            , _stateGameBehavior = game tickEventStream eventEventStream ballPicture
+            , _stateGameBehavior = pictureBehavior
             , _stateRenderFunction = wrenchRender platform (md ^. mdSurfaces) (error "no font specified") (Just colorsBlack)
+            , _stateCurrentTicks = initialTicks
             }
       -- event and tick code here
       waitFinished <- async (threadDelay (fromSeconds (1/60)))
