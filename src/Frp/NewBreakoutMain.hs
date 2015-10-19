@@ -11,11 +11,12 @@ import Wrench.Time(TimeTicks,getTicks,threadDelay,fromSeconds,tickDelta,TimeDelt
 import qualified Wrench.Event as WE
 import Wrench.Rectangle(rectDimensions)
 import Wrench.ImageData(findSurfaceUnsafe)
-import Wrench.Picture(Picture,pictureSprite,pictureTranslated)
+import Wrench.Picture(Picture,pictureSprite,pictureTranslated,pictures)
 import ClassyPrelude
 import Frp.Ord(clamp)
-import Control.FRPNow.Core(runNowMaster,Behavior,callback,Now,async,planNow)
-import Control.FRPNow.Lib(sample,plan,foldB)
+import Control.FRPNow.Core(runNowMaster,Behavior,callback,Now,async,planNow,switch)
+import Control.FRPNow.Lib(sample,plan,foldB,snapshot)
+import qualified Control.FRPNow.Lib(when)
 import Control.FRPNow.Time(delayTime)
 import Control.FRPNow.EvStream(EvStream,callbackStream,catMaybesEs,foldEs)
 import Control.Lens(makeLenses,(^.),view,(&),(.~),mapped,(^?),_1)
@@ -101,18 +102,37 @@ game initialTicks time event pictureData = do
       pp <- paddlePosition (mouseXMovement event)
       bp <- ballPosition
       return (createPicture <$> pure pictureData <*> pp <*> bp)
-    gameoverPicture = undefined
+    gameoverPicture :: PictureType -> Behavior PictureType
+    gameoverPicture finalPicture = return (pictures [finalPicture,(pictureData ^. pictureBall . _1)])
+    --finalPicture :: Behavior (Behavior PictureType)
     finalPicture = do
       {- TODO
+      -- Snapshot normalPicture when gameover happens
+      -- gameover has to be an event
+      -- say it is (Event ())
+      -- Switch to gameover behavior which uses the snapshotted normalPicture plus something else
+
       np <- normalPicture
       go <- gameover
       (when go) :: Behavior (Event ())
       -}
-      return () :: Behavior ()
+      -- Vorbedingungen:
+      --
+      -- gameover :: Behavior Bool
+      -- normalPicture :: Behavior (Behavior Picture)
+      -- gameoverPicture :: Picture -> Behavior Picture
+      go <- gameover
+      goEvent <- Control.FRPNow.Lib.when go
+      normalPic <- normalPicture
+      goPic <- snapshot normalPic goEvent
+      let
+        result :: Behavior PictureType
+        result = switch normalPic (gameoverPicture <$> goPic)
+      return result
   --
-  normalPic <- sample $ normalPicture
+  --normalPic <- sample $ finalPicture
   --return ((`pictureTranslated` (pictureData ^. pictureBall . _1)) <$> ballPos)
-  return normalPic
+  sample finalPicture
 -- End game code
 
 createPicture :: PictureData -> Point -> Point-> Picture Float Double
