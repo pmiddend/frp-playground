@@ -6,10 +6,11 @@ import Wrench.Color(colorsBlack)
 import Wrench.MediaData(readMediaFiles,mdSurfaces)
 import Wrench.Platform(WindowTitle(..),pollEvents,Platform,loadImage)
 import Wrench.WindowSize(WindowSize(..))
+import Wrench.Rectangle(Rectangle(..),rectTop,rectBottom,rectRightBottom,rectLeftTop,rectHeight,rectWidth,rectLeft,rectRight,rectFromOriginAndDim,rectDimensions)
 import Wrench.MouseGrabMode(MouseGrabMode(..))
 import Wrench.Time(TimeTicks,getTicks,threadDelay,fromSeconds,tickDelta,TimeDelta,toSeconds)
 import qualified Wrench.Event as WE
-import Wrench.Rectangle(rectDimensions)
+import Wrench.CommonGeometry(pointL,pointG)
 import Wrench.ImageData(findSurfaceUnsafe)
 import Wrench.Picture(Picture,pictureSprite,pictureTranslated,pictures)
 import ClassyPrelude
@@ -18,7 +19,7 @@ import Control.FRPNow.Core(runNowMaster,Behavior,callback,Now,async,planNow,swit
 import Control.FRPNow.Lib(sample,plan,foldB,snapshot)
 import qualified Control.FRPNow.Lib(when)
 import Control.FRPNow.Time(delayTime)
-import Control.FRPNow.EvStream(EvStream,callbackStream,catMaybesEs,foldEs)
+import Control.FRPNow.EvStream(EvStream,callbackStream,catMaybesEs,foldEs,toChanges)
 import Control.Lens(makeLenses,(^.),view,(&),(.~),mapped,(^?),_1)
 import Linear.V2(V2(..),_x,_y)
 import Linear.Vector((*^))
@@ -38,9 +39,24 @@ type Point = V2 UnitType
 data PictureData = PictureData{
     _picturePaddle :: (PictureType,Point)
   , _pictureBall :: (PictureType,Point)
+  , _pictureBlock :: (PictureType,Point)
   }
 
 $(makeLenses ''PictureData)
+
+data CollisionDirection = CollisionOnLeft
+                        | CollisionOnRight
+                        | CollisionOnRoof
+                        | CollisionOnFloor
+                          deriving(Show,Eq,Bounded,Read,Enum)
+
+data CollisionData = CollisionData {
+    _cdDirection    :: CollisionDirection
+  , _cdPointOnBall  :: Point
+  , _cdPointOnOther :: Point
+  } deriving(Eq)
+
+$(makeLenses ''CollisionData)
 
 paddleSize :: Point
 paddleSize = V2 62 18
@@ -50,6 +66,18 @@ bottomBorder = 480
 
 initialPaddlePosition :: Point
 initialPaddlePosition = V2 320 (480-14-(paddleSize ^. _y))
+
+blockSize :: Point
+blockSize = V2 40 20
+
+ballSize :: UnitType
+ballSize = 14
+
+topBorder :: UnitType
+topBorder = 32
+
+initialBlocks :: [Point]
+initialBlocks = [V2 (leftBorder + x * blockSize ^. _x) (topBorder + y * blockSize ^. _y) | x <- [0..14], y <- [0..5]]
 
 leftBorder :: UnitType
 leftBorder = 20
@@ -66,8 +94,8 @@ mouseXMovement event = fromIntegralPoint <$> catMaybesEs ((mapped . _y .~ 0) . (
 initialBallPosition :: Point
 initialBallPosition = V2 320 240
 
-paddlePosition :: EvStream Point -> Behavior (Behavior Point)
-paddlePosition xMovement = foldEs ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2))) initialPaddlePosition xMovement
+calcPaddlePosition :: EvStream Point -> Behavior (Behavior Point)
+calcPaddlePosition xMovement = foldEs ((\(V2 x1 y1) (V2 x2 y2) -> V2 (clamp leftBorder (rightBorder - paddleSize ^. _x) (x1+x2)) (y1+y2))) initialPaddlePosition xMovement
 
 deltaVel :: Point -> TickData -> Point
 deltaVel v td = (realToFrac (toSeconds (td ^. currentDelta))) *^ v
@@ -80,6 +108,24 @@ integrate time v = do
   where
     add total ((t1,v),t2) = total + (realToFrac (toSeconds (t2 `tickDelta` t1)) *^ v)
 
+detectCollisionRect :: Rectangle UnitType -> Rectangle UnitType -> Maybe CollisionData
+detectCollisionRect rect ball
+  | paddleInRange && (ballVMiddle < rect ^. rectTop) = Just (makeCollision CollisionOnFloor (V2 ballHMiddle (rect ^. rectTop)))
+  | paddleInRange && (ballVMiddle > rect ^. rectBottom) = Just (makeCollision CollisionOnRoof (V2 ballHMiddle (rect ^. rectBottom)))
+  | paddleInRange && (ballHMiddle < paddleHMiddle) = Just (makeCollision CollisionOnLeft (V2 (rect ^. rectLeft) ballVMiddle))
+  | paddleInRange && (ballHMiddle > paddleHMiddle) = Just (makeCollision CollisionOnRight (V2 (rect ^. rectRight) ballVMiddle))
+  | otherwise = Nothing
+  where paddleInRange = ((ball ^. rectRightBottom) `pointG` (rect ^. rectLeftTop)) && ((ball ^. rectLeftTop) `pointL` (rect ^. rectRightBottom))
+        ballVMiddle = ball ^. rectTop + ball ^. rectHeight / 2
+        ballHMiddle = ball ^. rectLeft + ball ^. rectWidth / 2
+        paddleHMiddle = rect ^. rectLeft + rect ^. rectWidth / 2
+        makeCollision dir p = CollisionData{_cdDirection=dir,_cdPointOnBall=p - ball ^. rectLeftTop,_cdPointOnOther=p - rect ^. rectLeftTop}
+
+ballRect :: Point -> Rectangle UnitType
+ballRect p = rectFromOriginAndDim p (V2 ballSize ballSize)
+
+paddleRect :: Point -> Rectangle UnitType
+paddleRect p = rectFromOriginAndDim p paddleSize
 
 game :: TimeTicks -> EvStream TickData -> EvStream WE.Event -> PictureData -> Now (Behavior PictureType)
 game initialTicks time event pictureData = do
@@ -97,11 +143,20 @@ game initialTicks time event pictureData = do
     gameover = do
       pos <- ballPosition
       return (((>bottomBorder) .  view _y) <$> pos)
+    paddlePosition = calcPaddlePosition (mouseXMovement event)
+    ballPaddleCollision :: Behavior (EvStream CollisionData)
+    ballPaddleCollision = do
+      paddlePos <- paddlePosition
+      ballPos <- ballPosition
+      return $ catMaybesEs $ toChanges $ detectCollisionRect <$> (paddleRect <$> paddlePos) <*> (ballRect <$> ballPos)
+    blocks :: Behavior [Point]
+    blocks = do
+      return initialBlocks
     normalPicture :: Behavior (Behavior PictureType)
     normalPicture = do
-      pp <- paddlePosition (mouseXMovement event)
+      pp <- paddlePosition
       bp <- ballPosition
-      return (createPicture <$> pure pictureData <*> pp <*> bp)
+      return (createPicture <$> pure pictureData <*> pp <*> bp <*> blocks)
     gameoverPicture :: PictureType -> Behavior PictureType
     gameoverPicture finalPicture = return (pictures [finalPicture,(pictureData ^. pictureBall . _1)])
     --finalPicture :: Behavior (Behavior PictureType)
@@ -135,10 +190,13 @@ game initialTicks time event pictureData = do
   sample finalPicture
 -- End game code
 
-createPicture :: PictureData -> Point -> Point-> Picture Float Double
-createPicture pictureData paddlePos ballPos =
+-- [p] -> (p -> m) -> m
+
+createPicture :: PictureData -> Point -> Point -> [Point] -> Picture Float Double
+createPicture pictureData paddlePos ballPos blocks =
   ((`pictureTranslated` (pictureData ^. pictureBall . _1)) ballPos) <>
-  ((`pictureTranslated` (pictureData ^. picturePaddle . _1)) paddlePos)
+  ((`pictureTranslated` (pictureData ^. picturePaddle . _1)) paddlePos) <>
+  (foldMap (`pictureTranslated` (pictureData ^. pictureBlock . _1)) blocks)
 
 data MainLoopState p = MainLoopState {
     _statePlatform :: p
@@ -181,7 +239,7 @@ main =
       (quitEvent,quitEventCallback) <- callback
       --clock <- sample $ foldEs (+) 0 tickEventStream
       initialTicks <- liftIO getTicks
-      pictureBehavior <- game initialTicks tickEventStream eventEventStream (PictureData{_picturePaddle = loadPicture md "paddle",_pictureBall = loadPicture md "ball"})
+      pictureBehavior <- game initialTicks tickEventStream eventEventStream (PictureData{_picturePaddle = loadPicture md "paddle",_pictureBall = loadPicture md "ball",_pictureBlock = loadPicture md "block"})
       let initialState = MainLoopState{
               _statePlatform = platform
             , _stateTickEventCallback = tickEventCallback
